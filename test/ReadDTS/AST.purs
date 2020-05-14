@@ -12,14 +12,14 @@ import Data.String (joinWith)
 import Effect (Effect)
 import Effect.Console (log)
 import Global.Unsafe (unsafeStringify)
-import ReadDTS (FullyQualifiedName, OnDeclaration, OnType, TsDeclaration, fqnToString, readDTS, unsafeTsStringToString)
+import ReadDTS (FullyQualifiedName, OnDeclaration, OnType, TsDeclaration, fqnToString)
+import ReadDTS (defaults) as ReadDTS
 import ReadDTS.AST (Application', TypeConstructor)
 import ReadDTS.AST (build) as AST
 import ReadDTS.Instantiation (instantiate, isObjectLiteral)
 import ReadDTS.Instantiation.Pretty (pprint) as Instantiation.Pretty
 import Test.ReadDTS.Instantiation (suite) as Test.ReadDTS.Instantiation
 import Test.Unit.Main (runTest) as Test
-import Unsafe.Coerce (unsafeCoerce)
 
 type TsDeclarationRef =
   { fullyQualifiedName ∷ FullyQualifiedName
@@ -42,10 +42,12 @@ stringOnDeclaration ∷ OnDeclaration DeclarationRepr TypeRepr
 stringOnDeclaration =
   -- | FIX: I'm handling `function` as unknown for now
   -- | Provide proper handling.
-  { function: \u → DeclarationRepr
-      { repr: "function"
-      , fullyQualifiedName: Just (unsafeCoerce u.fullyQualifiedName)
-      , tsDeclarations: []
+  { class_: \i → DeclarationRepr
+      { fullyQualifiedName: Just i.fullyQualifiedName
+      , repr: serClass i
+      , tsDeclarations:
+          (foldMap (foldMap _.tsDeclarations <<< _.default)) i.typeParameters
+          <> foldMap _.type.tsDeclarations i.properties
       }
   , interface: \i → DeclarationRepr
       { fullyQualifiedName: Just i.fullyQualifiedName
@@ -55,7 +57,7 @@ stringOnDeclaration =
           <> foldMap _.type.tsDeclarations i.properties
       }
   -- | TODO: Fix printing of module here
-  , module: \i → DeclarationRepr
+  , module_: \i → DeclarationRepr
       { fullyQualifiedName: Nothing -- Just i.fullyQualifiedName
       , repr: serModule i
       , tsDeclarations: []
@@ -81,17 +83,25 @@ serUnknown r = "unkownDeclaration " <> show r.fullyQualifiedName <> ": " <> r.ms
 serTypeAlias r
   = "typeAlias "
   <> r.name
-  <> " <" <> joinWith ", " (map (unsafeTsStringToString <<< _.name) r.typeParameters) <> "> : "
+  <> " <" <> joinWith ", " (map _.name r.typeParameters) <> "> : "
   <> r.type.repr
 
 serModule { fullyQualifiedName }
   = "module "
   <> show fullyQualifiedName
 
+serClass { name, fullyQualifiedName, properties, typeParameters }
+  = "class "
+  <> show fullyQualifiedName
+  <> " <" <> joinWith ", " (map (\{ name, default } → name <> " = " <> foldMap _.repr default) typeParameters) <> "> : \n\t"
+  <> joinWith ";\n\t" (map onMember properties)
+  where
+    onMember r = joinWith " " [r.name, if r.optional then "?:" else ":", r.type.repr ]
+
 serInterface { name, fullyQualifiedName, properties, typeParameters }
   = "interface "
   <> show fullyQualifiedName
-  <> " <" <> joinWith ", " (map (\{ name, default } → unsafeTsStringToString name <> " = " <> foldMap _.repr default) typeParameters) <> "> : \n\t"
+  <> " <" <> joinWith ", " (map (\{ name, default } → name <> " = " <> foldMap _.repr default) typeParameters) <> "> : \n\t"
   <> joinWith ";\n\t" (map onMember properties)
   where
     onMember r = joinWith " " [r.name, if r.optional then "?:" else ":", r.type.repr ]
@@ -109,6 +119,10 @@ stringOnType =
         , tsDeclarations: foldMap _.type.tsDeclarations props
         }
   , array: \t → { repr: "Array: " <> t.repr, tsDeclarations: t.tsDeclarations }
+  , function: \u →
+      { repr: "function TO BE FIXED"
+      , tsDeclarations: []
+      }
   , intersection: \ts →
       { repr: append "intersection: " <<< joinWith " & " <<< map _.repr $ ts
       , tsDeclarations: foldMap _.tsDeclarations ts
@@ -211,7 +225,7 @@ file =
 main ∷ Effect Unit
 main = do
   let
-    compilerOptions = { strictNullChecks: true }
+    compilerOptions = ReadDTS.defaults { strictNullChecks = true }
   --   constructors = { onDeclaration: stringOnDeclaration, onTypeNode: stringOnType } 
 
   -- readDTS compilerOptions constructors file >>= case _ of
